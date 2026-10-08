@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 
 from google import genai
 from google.genai import errors, types
@@ -31,35 +32,58 @@ def _get_client() -> genai.Client:
     return _client
 
 
+def _models() -> list[str]:
+    models = [settings.gemini_model]
+    if settings.gemini_fallback_model and settings.gemini_fallback_model not in models:
+        models.append(settings.gemini_fallback_model)
+    return models
+
+
+def _call(model: str, contents, system: str, thinking: types.ThinkingLevel, config: dict) -> types.GenerateContentResponse:
+    return _get_client().models.generate_content(
+        model=model,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=system,
+            thinking_config=types.ThinkingConfig(thinking_level=thinking),
+            **config,
+        ),
+    )
+
+
 def _generate(contents, *, system: str, thinking: types.ThinkingLevel = types.ThinkingLevel.LOW, **config) -> types.GenerateContentResponse:
+    """Bepul tarifda 503 (band) va 429 (limit) tez-tez uchraydi: asosiy modelni bir marta qayta urinadi,
+    keyin zaxira modelga o'tadi (bepul limitlar har bir model uchun alohida)."""
     if not enabled():
         raise LLMUnavailable("LLM o'chirilgan yoki API kalit yo'q")
-    try:
-        response = _get_client().models.generate_content(
-            model=settings.gemini_model,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                thinking_config=types.ThinkingConfig(thinking_level=thinking),
-                **config,
-            ),
-        )
-    except errors.ClientError as e:
-        # 429 — bepul tarif limiti (daqiqalik yoki kunlik) tugadi
-        if e.code == 429:
-            log.warning("Gemini limiti tugadi: %s", e.message)
-            raise LLMUnavailable("rate_limit") from e
-        log.error("Gemini so'rov xatosi %s: %s", e.code, e.message)
-        raise LLMUnavailable(f"api_error_{e.code}") from e
-    except errors.ServerError as e:
-        log.error("Gemini server xatosi %s: %s", e.code, e.message)
-        raise LLMUnavailable(f"server_error_{e.code}") from e
-    except errors.APIError as e:
-        log.error("Gemini xatosi %s: %s", e.code, e.message)
-        raise LLMUnavailable("api_error") from e
-    except OSError as e:
-        log.error("Gemini bilan aloqa yo'q: %s", e)
-        raise LLMUnavailable("connection") from e
+    last_error = "api_error"
+    response = None
+    for model in _models():
+        for attempt in range(2):
+            try:
+                response = _call(model, contents, system, thinking, config)
+                break
+            except errors.ClientError as e:
+                if e.code == 429:
+                    log.warning("Gemini %s limiti tugadi: %s", model, e.message)
+                    last_error = "rate_limit"
+                    break  # shu modelda qayta urinish foydasiz — zaxira modelga o'tamiz
+                log.error("Gemini so'rov xatosi %s: %s", e.code, e.message)
+                raise LLMUnavailable(f"api_error_{e.code}") from e
+            except errors.ServerError as e:
+                log.warning("Gemini %s server xatosi %s (urinish %d): %s", model, e.code, attempt + 1, e.message)
+                last_error = f"server_error_{e.code}"
+                time.sleep(2)
+            except errors.APIError as e:
+                log.error("Gemini xatosi %s: %s", e.code, e.message)
+                raise LLMUnavailable("api_error") from e
+            except OSError as e:
+                log.error("Gemini bilan aloqa yo'q: %s", e)
+                raise LLMUnavailable("connection") from e
+        if response is not None:
+            break
+    if response is None:
+        raise LLMUnavailable(last_error)
 
     candidate = response.candidates[0] if response.candidates else None
     if candidate is None or candidate.finish_reason not in (types.FinishReason.STOP, types.FinishReason.MAX_TOKENS):

@@ -71,6 +71,18 @@ aşılırsa uygulama çökmez, kibar bir hata mesajı gösterir. Ücretsiz katma
 3. Prod'da `DEV_MODE=false` yap.
 4. `python bot.py` (veya `docker compose --profile bot up`).
 
+## Otomatik çalışma (Windows)
+
+`backend/run_all.py` her şeyi tek başına yönetir: frontend'i gerekirse derler, API'yi (frontend'i de sunar)
+127.0.0.1:8000'de başlatır, Cloudflare quick tunnel açar ve bulunan `https://….trycloudflare.com` adresiyle botu
+başlatır (menü butonu otomatik güncellenir). Çöken parçayı yeniden başlatır.
+
+- Oturum açılınca otomatik başlar: `shell:startup` içindeki `Pazanda.lnk` kısayolu (silmek otomatik başlatmayı kapatır).
+- Elle durdurmak: `backend/.venv/Scripts/python run_all.py --stop`
+- Loglar: `backend/logs/` (`run_all.log`, `api.log`, `bot.log`, `tunnel.log`)
+- Tünel adresi her başlatmada değişir; Telegram'daki menü butonu ve `/start` butonu yeni adresi kullanır.
+  Kalıcı adres için bir alan adıyla Cloudflare named tunnel veya sunucuya deploy gerekir.
+
 ## Docker (PostgreSQL ile)
 
 ```bash

@@ -10,7 +10,9 @@ import httpx
 
 from app.config import settings
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# httpx har bir so'rov URL'ini yozadi, URL esa bot tokenini o'z ichiga oladi — logga tushmasin
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("bot")
 
 API = f"https://api.telegram.org/bot{settings.telegram_bot_token}"
@@ -46,7 +48,7 @@ def main():
             try:
                 updates = call(client, "getUpdates", offset=offset, timeout=30, allowed_updates=["message"]) or []
             except httpx.HTTPError as e:
-                log.warning("getUpdates: %s", e)
+                log.warning("getUpdates: %s", type(e).__name__)  # xabarda URL (token) bo'lishi mumkin
                 time.sleep(3)
                 continue
             for upd in updates:

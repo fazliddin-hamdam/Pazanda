@@ -4,13 +4,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import kitchen, llm, persona, recipes
 from .auth import current_user
-from .config import settings
+from .config import BACKEND_DIR, settings
 from .db import Base, SessionLocal, engine, get_db
 from .ingredients import CATEGORIES, canonical, format_grams, is_staple
 from .models import CookLog, Recipe, ShoppingItem, StockItem, User
@@ -29,7 +30,9 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="O'zbek Pazanda Bot", lifespan=lifespan)
+# Swagger faqat ishlab chiqishda — ilova tunnel orqali internetga ochiq
+docs = {} if settings.dev_mode else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+app = FastAPI(title="O'zbek Pazanda Bot", lifespan=lifespan, **docs)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
@@ -331,3 +334,11 @@ def admin_upsert_recipe(data: dict, x_admin_token: str | None = Header(default=N
     except ValueError as e:
         raise HTTPException(422, str(e))
     return _recipe_out(recipe)
+
+
+# ---------------------------------------------------------------- Mini App (frontend/dist)
+
+FRONTEND_DIST = BACKEND_DIR.parent / "frontend" / "dist"
+if FRONTEND_DIST.is_dir():
+    # API marshrutlaridan keyin ulanadi, shuning uchun /api/* ni to'smaydi
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="webapp")
