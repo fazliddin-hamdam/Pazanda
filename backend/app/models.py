@@ -16,6 +16,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # Telegram user id
     first_name: Mapped[str] = mapped_column(String(128), default="")
     username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    language: Mapped[str | None] = mapped_column(String(5), nullable=True)  # uz | en | tr; None — hali tanlanmagan
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -46,6 +47,8 @@ class Recipe(Base):
     time_minutes: Mapped[int] = mapped_column(Integer, default=60)
     ingredients: Mapped[list] = mapped_column(JSON, default=list)
     steps: Mapped[list] = mapped_column(JSON, default=list)
+    # {"en": {"name", "description", "steps"}, "tr": {...}} — asosiy maydonlar o'zbekcha
+    translations: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     source: Mapped[str] = mapped_column(String(16), default="seed")  # seed | ai | n8n
     sources: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

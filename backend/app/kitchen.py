@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .ingredients import SUBSTITUTES, canonical, is_staple
+from .ingredients import DEFAULT_LANG, SUBSTITUTES, canonical, is_staple
 from .models import Recipe, StockItem
 
 # Shuncha grammdan kam yetishmovchilik e'tiborga olinmaydi
@@ -25,7 +25,7 @@ class IngredientCheck:
 @dataclass
 class RecipeCheck:
     slug: str
-    name: str
+    name: str  # tanlangan tildagi taom nomi
     servings: int
     coverage: float  # 0..1, majburiy masalliqlar bo'yicha
     ingredients: list[IngredientCheck]
@@ -58,7 +58,7 @@ def available(stock: dict[str, float], name: str) -> float:
     return sum(stock.get(n, 0) for n in _sources(name))
 
 
-def check_recipe(recipe: Recipe, servings: int, stock: dict[str, float]) -> RecipeCheck:
+def check_recipe(recipe: Recipe, servings: int, stock: dict[str, float], lang: str = DEFAULT_LANG) -> RecipeCheck:
     checks: list[IngredientCheck] = []
     ratios: list[float] = []
     for item in recipe.ingredients:
@@ -71,12 +71,13 @@ def check_recipe(recipe: Recipe, servings: int, stock: dict[str, float]) -> Reci
         if not optional and not staple and need > 0:
             ratios.append(min(1.0, have / need))
     coverage = sum(ratios) / len(ratios) if ratios else 1.0
-    return RecipeCheck(recipe.slug, recipe.name, servings, round(coverage, 3), checks)
+    name = ((recipe.translations or {}).get(lang) or {}).get("name") or recipe.name
+    return RecipeCheck(recipe.slug, name, servings, round(coverage, 3), checks)
 
 
-def suggest(recipes: list[Recipe], servings: int, stock: dict[str, float], limit: int = 3) -> list[RecipeCheck]:
+def suggest(recipes: list[Recipe], servings: int, stock: dict[str, float], lang: str = DEFAULT_LANG, limit: int = 3) -> list[RecipeCheck]:
     """Ombordagi masalliqlarga eng mos keladigan taomlar: avval to'liq yetadiganlari, keyin eng yaqinlari."""
-    checks = [check_recipe(r, servings, stock) for r in recipes]
+    checks = [check_recipe(r, servings, stock, lang) for r in recipes]
     checks = [c for c in checks if c.coverage > 0]
     checks.sort(key=lambda c: (c.ready, c.coverage, -len(c.missing)), reverse=True)
     return checks[:limit]

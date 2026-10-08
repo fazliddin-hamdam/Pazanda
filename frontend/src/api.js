@@ -16,15 +16,16 @@ async function request(method, path, body) {
   try {
     res = await fetch(BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined })
   } catch {
-    throw new ApiError("Internet bilan aloqa yo'q. Qayta urinib ko'ring.", 0)
+    throw new ApiError('', 0) // matnni ilova tanlangan tilda ko'rsatadi
   }
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new ApiError(data.detail || 'Xatolik yuz berdi', res.status)
+  if (!res.ok) throw new ApiError(typeof data.detail === 'string' ? data.detail : '', res.status)
   return data
 }
 
 export const api = {
   me: () => request('GET', '/api/me'),
+  setLanguage: (language) => request('PUT', '/api/me/language', { language }),
   stock: () => request('GET', '/api/stock'),
   parseStock: (text) => request('POST', '/api/stock/parse', { text }),
   updateStock: (id, grams) => request('PATCH', `/api/stock/${id}`, { grams }),

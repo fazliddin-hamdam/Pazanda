@@ -3,28 +3,29 @@
   "configurations": [
     {
       "name": "api",
-      "runtimeExecutable": "C:\\Users\\Fazliddin\\Desktop\\ovqatbot\\backend\\.venv\\Scripts\\python.exe",
-      "runtimeArgs": [
-        "-m",
-        "uvicorn",
-        "app.main:app",
-        "--app-dir",
-        "backend",
-        "--port",
-        "8000"
-      ],
+      "runtimeExecutable": "C:/Users/Fazliddin/Desktop/ovqatbot/backend/.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8000"],
       "port": 8000
     },
     {
       "name": "webapp",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "--prefix",
-        "frontend",
-        "run",
-        "dev"
-      ],
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
       "port": 5173
+    },
+    {
+      "name": "api-dev",
+      "runtimeExecutable": "C:/Users/Fazliddin/Desktop/ovqatbot/backend/.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8001"],
+      "env": { "DEV_MODE": "true", "DATABASE_URL": "sqlite:///./dev-preview.db", "LLM_ENABLED": "false" },
+      "port": 8001
+    },
+    {
+      "name": "webapp-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "--port", "5174"],
+      "env": { "API_PORT": "8001" },
+      "port": 5174
     }
   ]
 }

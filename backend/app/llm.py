@@ -8,8 +8,8 @@ from google import genai
 from google.genai import errors, types
 
 from .config import settings
-from .ingredients import CATALOG, CATEGORIES
-from .persona import PERSONA_SYSTEM
+from .ingredients import CATALOG, CATEGORIES, DEFAULT_LANG
+from .persona import persona_system
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def _json_config(schema: dict) -> dict:
 
 
 _CATALOG_HINT = "\n".join(
-    f"- {i.name} ({CATEGORIES[i.category]})" + (f", 1 ta ≈ {int(i.piece_g)} g" if i.piece_g else "")
+    f"- {i.name} (en: {i.en}; tr: {i.tr}; category: {i.category})" + (f", 1 piece ≈ {int(i.piece_g)} g" if i.piece_g else "")
     for i in CATALOG
 )
 
@@ -133,17 +133,19 @@ STOCK_SCHEMA = {
     "required": ["items", "unknown"],
 }
 
-STOCK_SYSTEM = f"""Foydalanuvchi bozordan yoki do'kondan olib kelgan oziq-ovqat mahsulotlarini erkin matnda yozadi
-(o'zbek lotin yoki kirill yozuvida, ba'zan ruscha so'zlar bilan). Har bir mahsulotni ajratib, miqdorini GRAMMga o'gir.
+STOCK_SYSTEM = f"""The user lists groceries they brought home, in free text. The text may be in Uzbek (Latin or
+Cyrillic), English, Turkish or Russian. Extract every food product and convert its amount to GRAMS.
 
-Qoidalar:
-- name: o'zbek lotin yozuvida, kichik harflarda. Agar mahsulot quyidagi katalogda bo'lsa, AYNAN katalogdagi nomni ishlat.
-- Dona/ta/bosh/bog' bilan berilgan miqdorni odatiy og'irlik bo'yicha grammga o'gir (katalogdagi qiymatlardan foydalan).
-- Litr: suv/sut ≈ 1000 g, o'simlik yog'i ≈ 920 g.
-- Miqdor ko'rsatilmagan bo'lsa, oddiy xarid miqdorini taxmin qil (masalan, 1 bog' ko'kat, 1 kg sabzavot).
-- Mahsulot bo'lmagan yoki tushunarsiz qismlarni "unknown" ro'yxatiga yoz.
+Rules:
+- If the product is in the catalog below (in any language), set name to the catalog's canonical Uzbek name exactly
+  as written (the first word(s) of the line, e.g. "piyoz" for onion / soğan).
+- If it is not in the catalog, set name to the product's name in the language the user wrote in, lowercase.
+- Convert pieces / bunches / heads using typical weights (use the catalog weights when given).
+- Litres: water/milk ≈ 1000 g, vegetable oil ≈ 920 g.
+- If no amount is given, assume a typical purchase (e.g. 1 bunch of herbs, 1 kg of a vegetable).
+- Put parts that are not food or cannot be understood into "unknown", quoted as the user wrote them.
 
-Katalog:
+Catalog:
 {_CATALOG_HINT}"""
 
 
@@ -155,6 +157,16 @@ def parse_stock(text: str) -> tuple[list[dict], list[str]]:
 
 
 # ---------------------------------------------------------------- yangi retsept (RAG)
+
+_TRANSLATION = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "description": {"type": "string"},
+        "steps": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["name", "description", "steps"],
+}
 
 RECIPE_SCHEMA = {
     "type": "object",
@@ -177,31 +189,39 @@ RECIPE_SCHEMA = {
             },
         },
         "steps": {"type": "array", "items": {"type": "string"}},
+        "translations": {
+            "type": "object",
+            "properties": {"en": _TRANSLATION, "tr": _TRANSLATION},
+            "required": ["en", "tr"],
+        },
     },
-    "required": ["is_uzbek_dish", "name", "aliases", "description", "time_minutes", "ingredients", "steps"],
+    "required": ["is_uzbek_dish", "name", "aliases", "description", "time_minutes", "ingredients", "steps", "translations"],
 }
 
-RESEARCH_SYSTEM = """Sen o'zbek milliy taomlari bo'yicha tadqiqotchisan. Foydalanuvchi so'ragan taomning an'anaviy
-o'zbekcha retseptini Google qidiruvi orqali top. Bir nechta ishonchli manbani solishtirib, quyidagilarni aniqla:
-taom haqiqatan o'zbek oshxonasiga tegishlimi; masalliqlar va ularning 1 kishiga to'g'ri keladigan miqdori (grammda);
-tayyorlash bosqichlari; umumiy vaqt. Agar taom o'zbek oshxonasiga tegishli bo'lmasa, buni aniq ayt."""
+RESEARCH_SYSTEM = """You research traditional Uzbek dishes. The user names a dish (in Uzbek, English, Turkish or
+Russian). Use Google Search to find its traditional Uzbek recipe. Compare several reliable sources and determine:
+whether the dish really belongs to Uzbek cuisine; the ingredients and their amount per person (in grams); the cooking
+steps; the total time. If the dish is not part of Uzbek cuisine, say so clearly."""
 
-RECIPE_SYSTEM = f"""Tadqiqot natijasini retsept JSON sxemasiga o'gir.
-- Hamma matnlar o'zbek tilida (lotin yozuvi). Taom nomi o'zbekcha an'anaviy nomida.
-- Taom o'zbek oshxonasiga tegishli bo'lmasa, is_uzbek_dish=false qilib, qolgan maydonlarni bo'sh qoldir.
-- ingredients: grams_per_person — 1 kishi uchun grammda. Masalliq nomlari katalogda bo'lsa, AYNAN katalogdagi
-  nomni ishlat (har qanday qizil go'sht uchun "go'sht"). Tuz, ziravorlar, suv, ko'katlar va bezak uchun
-  masalliqlarni optional=true qil.
-- steps: 4-9 ta qadam, samimiy oshpaz ohangida, qozon, zirvak, kapgir, damlash kabi milliy atamalarni ishlatib.
-- aliases: taomning boshqa yozilish shakllari (apostrofsiz, kirillcha, ruscha).
+RECIPE_SYSTEM = f"""Convert the research result into the recipe JSON schema.
+- name, description, steps, aliases: in Uzbek (Latin script); name is the dish's traditional Uzbek name.
+- translations.en and translations.tr: the same name, description and steps in English and in Turkish, with exactly
+  the same number of steps in the same order. Keep Uzbek culinary words (qozon, zirvak, kapgir...) and briefly
+  explain them in the translation the first time they appear.
+- If the dish is not part of Uzbek cuisine, set is_uzbek_dish=false and leave the other fields empty.
+- ingredients: grams_per_person is grams for ONE person. If an ingredient is in the catalog, use the catalog's
+  canonical Uzbek name exactly (use "go'sht" for any red meat). Mark salt, spices, water, herbs and garnish as
+  optional=true.
+- steps: 4-9 steps in the warm voice of a friendly home cook.
+- aliases: other spellings of the dish (without apostrophes, Cyrillic, Russian, English, Turkish).
 
-Katalog:
+Catalog:
 {_CATALOG_HINT}"""
 
 
 def _research(query: str) -> tuple[str, list[str]]:
     response = _generate(
-        f"Taom: {query}",
+        f"Dish: {query}",
         system=RESEARCH_SYSTEM,
         thinking=types.ThinkingLevel.MEDIUM,
         tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -216,7 +236,7 @@ def _research(query: str) -> tuple[str, list[str]]:
 
 
 def research_recipe(query: str) -> dict:
-    """Google qidiruvi orqali retseptni topib, RECIPE_SCHEMA ko'rinishida qaytaradi (+ "sources").
+    """Google qidiruvi orqali retseptni topib, RECIPE_SCHEMA ko'rinishida (uch tilda) qaytaradi (+ "sources").
 
     Ikki bosqich: qidiruv bilan erkin matn, keyin JSON sxemaga o'girish — Flash modellarida
     qidiruv va sxemani bitta so'rovda birlashtirish kafolatlanmagan.
@@ -225,9 +245,9 @@ def research_recipe(query: str) -> dict:
     if not research.strip():
         raise LLMUnavailable("empty_research")
     response = _generate(
-        f"So'rov: {query}\n\nTadqiqot natijasi:\n{research}",
+        f"Request: {query}\n\nResearch result:\n{research}",
         system=RECIPE_SYSTEM,
-        max_output_tokens=8000,
+        max_output_tokens=16000,
         **_json_config(RECIPE_SCHEMA),
     )
     data = _json(response)
@@ -238,10 +258,10 @@ def research_recipe(query: str) -> dict:
 # ---------------------------------------------------------------- suhbat
 
 
-def chat(history: list[dict], context: str | None = None) -> str:
-    system = PERSONA_SYSTEM
+def chat(history: list[dict], context: str | None = None, lang: str = DEFAULT_LANG) -> str:
+    system = persona_system(lang)
     if context:
-        system += "\n\nHozirgi holat:\n" + context
+        system += "\n\nCurrent situation:\n" + context
     turns: list[tuple[str, str]] = []
     for msg in history[-12:]:
         role = "model" if msg.get("role") == "assistant" else "user"

@@ -591,3 +591,61 @@ button {
   gap: 8px;
   align-items: center;
 }
+
+/* ------------------------------------------------ til tanlash */
+.top-actions {
+  display: flex;
+  gap: 8px;
+}
+.language-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+.language-card {
+  width: 100%;
+  max-width: 420px;
+  text-align: center;
+  display: grid;
+  gap: 12px;
+}
+.language-card h1 {
+  margin: 0;
+  font-size: 26px;
+}
+.logo.big {
+  font-size: 56px;
+}
+.small {
+  font-size: 13px;
+}
+.languages {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0;
+}
+.language {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--card);
+  font-size: 17px;
+  font-weight: 600;
+  text-align: left;
+}
+.language .flag {
+  font-size: 26px;
+}
+.language .check {
+  margin-left: auto;
+  color: var(--accent);
+}
+.language.selected,
+.language.suggested {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}

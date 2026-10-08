@@ -23,6 +23,19 @@ backend/   FastAPI + SQLAlchemy  (SQLite lokal, PostgreSQL prod)
 B) "O'zim ovqat tanlayman" (listeden seç / yaz) → kişi sayısı → eksik analizi
 ("…yana 750 gramm kartoshka kerak. Xarid ro'yxatiga qo'shaymi?") → adım adım tarif → "Taom tayyor" → stoktan düşüm.
 
+## Diller (Özbekçe / İngilizce / Türkçe)
+
+- İlk açılışta dil seçim ekranı gelir (Telegram dili ön seçili); seçim `users.language`'a kaydedilir,
+  başlıktaki bayrak butonuyla değiştirilebilir. Bot `/start` mesajı da bu dilde gelir.
+- Seçilen dil her yerde kullanılır: arayüz (`frontend/src/i18n.js`), persona mesajları (`app/persona.py`),
+  malzeme/kategori/birim adları (`app/ingredients.py`), tarif adı ve adımları (`app/seed_translations.py`),
+  Gemini sohbeti.
+- Stok girişi üç dilde anlaşılır: "2 kg guruch, 10 ta piyoz" / "2 kg pirinç, 10 adet soğan" / "2 kg rice, 10 onions".
+- Veritabanında malzemeler kanonik Özbekçe adla tutulur, sadece gösterim çevrilir; dil değiştirmek stoku etkilemez.
+- Gemini'nin bulduğu yeni tarifler tek çağrıda üç dilde birden üretilip kaydedilir.
+- Yeni bir hazır tarif eklerken `seed_translations.py`'ye en/tr çevirisini aynı adım sayısıyla ekleyin
+  (`tests/test_i18n.py` bunu kontrol eder).
+
 ## Lokal çalıştırma
 
 ```bash

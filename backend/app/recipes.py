@@ -8,9 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import llm
-from .ingredients import canonical, normalize
+from .ingredients import LANGS, canonical, fold, normalize
 from .models import Recipe
 from .seed_recipes import SEED_RECIPES
+from .seed_translations import EXTRA_ALIASES, TRANSLATIONS
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class NotUzbekDish(Exception):
 
 
 def _key(text: str) -> str:
-    return re.sub(r"[^a-z0-9а-яёўқғҳ ]", "", normalize(text)).replace(" ", "")
+    return re.sub(r"[^a-z0-9а-яёўқғҳ]", "", fold(text))
 
 
 def slugify(text: str) -> str:
@@ -32,11 +33,32 @@ def slugify(text: str) -> str:
 
 
 def seed(db: Session) -> None:
-    existing = set(db.scalars(select(Recipe.slug)).all())
+    """Boshlang'ich retseptlarni qo'shadi va yangilaydi (tarjimalar shu yerdan keladi)."""
+    existing = {r.slug: r for r in db.scalars(select(Recipe)).all()}
     for data in SEED_RECIPES:
-        if data["slug"] not in existing:
-            db.add(Recipe(source="seed", **data))
+        fields = {
+            **data,
+            "aliases": data["aliases"] + EXTRA_ALIASES.get(data["slug"], []),
+            "translations": TRANSLATIONS.get(data["slug"], {}),
+        }
+        recipe = existing.get(data["slug"])
+        if recipe is None:
+            db.add(Recipe(source="seed", **fields))
+        elif recipe.source == "seed":
+            for key, value in fields.items():
+                setattr(recipe, key, value)
     db.commit()
+
+
+def localized(recipe: Recipe, lang: str) -> dict:
+    """Retseptning nomi, tavsifi va qadamlari tanlangan tilda (tarjima bo'lmasa — o'zbekcha)."""
+    t = (recipe.translations or {}).get(lang) or {}
+    steps = t.get("steps") or []
+    return {
+        "name": t.get("name") or recipe.name,
+        "description": t.get("description") or recipe.description,
+        "steps": steps if len(steps) == len(recipe.steps) else recipe.steps,
+    }
 
 
 def all_recipes(db: Session) -> list[Recipe]:
@@ -51,8 +73,12 @@ def find(db: Session, query: str) -> Recipe | None:
     recipes = all_recipes(db)
     names: dict[str, Recipe] = {}
     for r in recipes:
-        for n in (r.name, r.slug, *(r.aliases or [])):
-            names[_key(n)] = r
+        translated = [t.get("name", "") for t in (r.translations or {}).values()]
+        for n in (r.name, r.slug, *(r.aliases or []), *translated):
+            # "Plov (Osh)" -> "plovosh" va "plov"
+            for variant in (n, n.split("(")[0]):
+                if _key(variant):
+                    names[_key(variant)] = r
     if q in names:
         return names[q]
     close = difflib.get_close_matches(q, names.keys(), n=1, cutoff=0.82)
@@ -88,6 +114,15 @@ def upsert(db: Session, data: dict, source: str) -> Recipe:
     recipe.time_minutes = int(data.get("time_minutes") or 60)
     recipe.ingredients = ingredients
     recipe.steps = steps
+    recipe.translations = {
+        lang: {
+            "name": str(t.get("name", "")).strip(),
+            "description": str(t.get("description", "")).strip(),
+            "steps": [str(s).strip() for s in t.get("steps", []) if str(s).strip()],
+        }
+        for lang, t in (data.get("translations") or {}).items()
+        if lang in LANGS and isinstance(t, dict)
+    }
     recipe.source = source
     recipe.sources = data.get("sources", [])
     db.add(recipe)

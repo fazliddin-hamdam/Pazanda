@@ -1,18 +1,19 @@
 import { useState } from 'react'
+import { LANGS } from './i18n.js'
 
-export function StockBoard({ stock, icons, onEdit }) {
+export function StockBoard({ stock, icons, t, onEdit }) {
   if (!stock.count) {
     return (
       <section className="empty">
         <div className="empty-icon">🧺</div>
-        <b>Ombor hozircha bo'sh</b>
-        <p>Bozordan nima olib kelganingizni pastdagi qatorga yozing — o'zim tartiblab qo'yaman.</p>
+        <b>{t('emptyTitle')}</b>
+        <p>{t('emptyText')}</p>
       </section>
     )
   }
   return (
     <section className="stock">
-      <h2>Oshxona omborim</h2>
+      <h2>{t('stockTitle')}</h2>
       <div className="cards">
         {stock.categories.map((cat) => (
           <div className="card" key={cat.key}>
@@ -22,7 +23,7 @@ export function StockBoard({ stock, icons, onEdit }) {
             <ul>
               {cat.items.map((item) => (
                 <li key={item.id} onClick={() => onEdit(item)}>
-                  <span className="item-name">{item.name}</span>
+                  <span className="item-name">{item.display || item.name}</span>
                   <span className="item-qty">{item.label}</span>
                 </li>
               ))}
@@ -34,23 +35,19 @@ export function StockBoard({ stock, icons, onEdit }) {
   )
 }
 
-export function ChatMessage({ msg, active, onAction }) {
+export function ChatMessage({ msg, t, active, onAction }) {
   return (
     <div className={`msg ${msg.from}`}>
-      {msg.kind === 'step' && (
-        <div className="step-label">
-          {msg.data.index + 1}-qadam / {msg.data.total}
-        </div>
-      )}
+      {msg.kind === 'step' && <div className="step-label">{t('step', { i: msg.data.index + 1, n: msg.data.total })}</div>}
       <div className={`bubble ${msg.from} ${msg.kind || ''}`}>
         {msg.text && <p className="text">{msg.text}</p>}
-        {msg.kind === 'suggestions' && <Suggestions items={msg.data} active={active} onAction={onAction} />}
-        {msg.kind === 'plan' && <PlanDetails check={msg.data.check} recipe={msg.data.recipe} />}
+        {msg.kind === 'suggestions' && <Suggestions items={msg.data} t={t} active={active} onAction={onAction} />}
+        {msg.kind === 'plan' && <PlanDetails check={msg.data.check} recipe={msg.data.recipe} t={t} />}
         {msg.kind === 'finish' && msg.data.length > 0 && (
           <ul className="used">
             {msg.data.map((u) => (
               <li key={u.name}>
-                − {u.label} {u.name}
+                − {u.label} {u.display || u.name}
               </li>
             ))}
           </ul>
@@ -69,7 +66,7 @@ export function ChatMessage({ msg, active, onAction }) {
   )
 }
 
-function Suggestions({ items, active, onAction }) {
+function Suggestions({ items, t, active, onAction }) {
   if (!items.length) return null
   return (
     <div className="suggestions">
@@ -82,10 +79,14 @@ function Suggestions({ items, active, onAction }) {
           <div className="meter">
             <span style={{ width: `${Math.round(s.coverage * 100)}%` }} />
           </div>
-          {s.missing.length > 0 && <small>Yetishmaydi: {s.missing.map((m) => `${m.missing_label} ${m.name}`).join(', ')}</small>}
+          {s.missing.length > 0 && (
+            <small>
+              {t('missingPrefix')} {s.missing.map((m) => `${m.missing_label} ${m.display || m.name}`).join(', ')}
+            </small>
+          )}
           {active && (
             <button className="btn small" onClick={() => onAction('choose', { slug: s.slug, name: s.name })}>
-              Shuni tanlayman
+              {t('pickThis')}
             </button>
           )}
         </div>
@@ -94,21 +95,21 @@ function Suggestions({ items, active, onAction }) {
   )
 }
 
-function PlanDetails({ check, recipe }) {
+function PlanDetails({ check, recipe, t }) {
   const [open, setOpen] = useState(false)
   const items = check.ingredients.filter((i) => !i.staple)
   return (
     <div className="plan">
       <button className="link" onClick={() => setOpen(!open)}>
-        {open ? 'Masalliqlarni yashirish ▴' : `Masalliqlar (${check.servings} kishiga) · ${recipe.time_minutes} daqiqa ▾`}
+        {open ? t('hideIngr') : t('showIngr', { n: check.servings, m: recipe.time_minutes })}
       </button>
       {open && (
         <ul className="ingredients">
           {items.map((i) => (
             <li key={i.name} className={i.missing_g > 5 && !i.optional ? 'missing' : ''}>
               <span>
-                {i.name}
-                {i.optional && <em> (ixtiyoriy)</em>}
+                {i.display || i.name}
+                {i.optional && <em> ({t('optional')})</em>}
               </span>
               <span>{i.need_label}</span>
             </li>
@@ -134,13 +135,13 @@ export function Typing({ text }) {
   )
 }
 
-export function Sheet({ title, onClose, children }) {
+export function Sheet({ title, t, onClose, children }) {
   return (
     <div className="sheet-backdrop" onClick={onClose}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-head">
           <b>{title}</b>
-          <button className="icon-btn" onClick={onClose} aria-label="Yopish">
+          <button className="icon-btn" onClick={onClose} aria-label={t('close')}>
             ✕
           </button>
         </div>
@@ -150,41 +151,59 @@ export function Sheet({ title, onClose, children }) {
   )
 }
 
-export function ServingsPicker({ value, onChange }) {
+export function LanguageList({ current, onPick, highlight = false }) {
+  return (
+    <div className="languages">
+      {LANGS.map((l) => (
+        <button
+          key={l.code}
+          className={`language ${l.code === current ? (highlight ? 'suggested' : 'selected') : ''}`}
+          onClick={() => onPick(l.code)}
+        >
+          <span className="flag">{l.flag}</span>
+          <span>{l.label}</span>
+          {l.code === current && !highlight && <span className="check">✓</span>}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+export function ServingsPicker({ value, onChange, t }) {
   return (
     <div className="servings">
-      <button type="button" onClick={() => onChange(Math.max(1, value - 1))} aria-label="Kamaytirish">
+      <button type="button" onClick={() => onChange(Math.max(1, value - 1))} aria-label={t('decrease')}>
         −
       </button>
       <div className="servings-value">
         <b>{value}</b>
-        <small>kishi</small>
+        <small>{t('people')}</small>
       </div>
-      <button type="button" onClick={() => onChange(Math.min(50, value + 1))} aria-label="Ko'paytirish">
+      <button type="button" onClick={() => onChange(Math.min(50, value + 1))} aria-label={t('increase')}>
         +
       </button>
     </div>
   )
 }
 
-export function ShoppingSheet({ items, onClose, onBought, onDelete }) {
+export function ShoppingSheet({ items, t, onClose, onBought, onDelete }) {
   return (
-    <Sheet title="Xarid ro'yxati" onClose={onClose}>
+    <Sheet title={t('cart')} t={t} onClose={onClose}>
       {!items.length ? (
-        <p className="muted">Ro'yxat bo'sh. Taom uchun nima yetishmasa, shu yerga qo'shib qo'yaman.</p>
+        <p className="muted">{t('shoppingEmpty')}</p>
       ) : (
         <ul className="shopping">
           {items.map((item) => (
             <li key={item.id}>
               <span>
-                <b>{item.name}</b>
+                <b>{item.display || item.name}</b>
                 <small>{item.label}</small>
               </span>
               <span className="row-actions">
                 <button className="btn small" onClick={() => onBought(item)}>
-                  Oldim ✓
+                  {t('bought')}
                 </button>
-                <button className="icon-btn" onClick={() => onDelete(item)} aria-label="O'chirish">
+                <button className="icon-btn" onClick={() => onDelete(item)} aria-label={t('remove')}>
                   🗑
                 </button>
               </span>
@@ -196,20 +215,20 @@ export function ShoppingSheet({ items, onClose, onBought, onDelete }) {
   )
 }
 
-export function EditSheet({ item, onClose, onSave }) {
+export function EditSheet({ item, t, onClose, onSave }) {
   const [grams, setGrams] = useState(String(item.grams))
   return (
-    <Sheet title={item.name} onClose={onClose}>
+    <Sheet title={item.display || item.name} t={t} onClose={onClose}>
       <label className="field">
-        <span>Miqdori (gramm)</span>
+        <span>{t('amountLabel')}</span>
         <input type="number" inputMode="numeric" min="0" value={grams} onChange={(e) => setGrams(e.target.value)} />
       </label>
       <div className="row">
         <button className="btn ghost" onClick={() => onSave(item, 0)}>
-          O'chirish
+          {t('remove')}
         </button>
         <button className="btn" onClick={() => onSave(item, Number(grams) || 0)}>
-          Saqlash
+          {t('save')}
         </button>
       </div>
     </Sheet>

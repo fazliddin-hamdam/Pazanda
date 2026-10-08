@@ -1,6 +1,7 @@
 import hmac
 import logging
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,10 +13,11 @@ from sqlalchemy.orm import Session
 from . import kitchen, llm, persona, recipes
 from .auth import current_user
 from .config import BACKEND_DIR, settings
-from .db import Base, SessionLocal, engine, get_db
-from .ingredients import CATEGORIES, canonical, format_grams, is_staple
+from .db import SessionLocal, get_db, migrate
+from .ingredients import CATEGORIES, DEFAULT_LANG, canonical, category_title, display_name, format_grams, is_staple
 from .models import CookLog, Recipe, ShoppingItem, StockItem, User
 from .parser import parse_stock_text
+from .persona import t
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ovqatbot")
@@ -23,7 +25,7 @@ log = logging.getLogger("ovqatbot")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(engine)
+    migrate()
     with SessionLocal() as db:
         recipes.seed(db)
     log.info("LLM: %s", "yoqilgan (%s)" % settings.gemini_model if llm.enabled() else "o'chirilgan — qoidaga asoslangan rejim")
@@ -44,6 +46,10 @@ app.add_middleware(
 # ---------------------------------------------------------------- sxemalar
 
 Servings = Field(ge=1, le=50)
+
+
+class LanguageIn(BaseModel):
+    language: Literal["uz", "en", "tr"]
 
 
 class StockText(BaseModel):
@@ -80,38 +86,46 @@ class ChatIn(BaseModel):
 # ---------------------------------------------------------------- yordamchilar
 
 
+def lang_of(user: User) -> str:
+    return user.language or DEFAULT_LANG
+
+
+def _item_out(id_: int, name: str, grams: float, lang: str) -> dict:
+    return {"id": id_, "name": name, "display": display_name(name, lang), "grams": round(grams), "label": format_grams(grams, name, lang)}
+
+
 def _stock_out(db: Session, user: User) -> dict:
-    rows = db.scalars(select(StockItem).where(StockItem.user_id == user.id).order_by(StockItem.name)).all()
+    lang = lang_of(user)
+    rows = db.scalars(select(StockItem).where(StockItem.user_id == user.id)).all()
     groups: dict[str, list] = {key: [] for key in CATEGORIES}
     for r in rows:
-        groups.setdefault(r.category, []).append(
-            {"id": r.id, "name": r.name, "grams": round(r.grams), "label": format_grams(r.grams, r.name)}
-        )
+        groups.setdefault(r.category, []).append(_item_out(r.id, r.name, r.grams, lang))
     return {
         "categories": [
-            {"key": key, "title": CATEGORIES.get(key, key), "items": items} for key, items in groups.items() if items
+            {"key": key, "title": category_title(key, lang), "items": sorted(items, key=lambda i: i["display"])}
+            for key, items in groups.items()
+            if items
         ],
         "count": len(rows),
     }
 
 
-def _recipe_out(r: Recipe) -> dict:
+def _recipe_out(r: Recipe, lang: str) -> dict:
     return {
         "slug": r.slug,
-        "name": r.name,
-        "description": r.description,
+        **recipes.localized(r, lang),
         "time_minutes": r.time_minutes,
         "ingredients": r.ingredients,
-        "steps": r.steps,
         "source": r.source,
     }
 
 
-def _check_out(check: kitchen.RecipeCheck) -> dict:
+def _check_out(check: kitchen.RecipeCheck, lang: str) -> dict:
     data = check.to_dict()
     for item in data["ingredients"] + data["missing"]:
-        item["need_label"] = format_grams(item["need_g"], item["name"])
-        item["missing_label"] = format_grams(item["missing_g"], item["name"]) if item["missing_g"] > 0 else ""
+        item["display"] = display_name(item["name"], lang)
+        item["need_label"] = format_grams(item["need_g"], item["name"], lang)
+        item["missing_label"] = format_grams(item["missing_g"], item["name"], lang) if item["missing_g"] > 0 else ""
     return data
 
 
@@ -123,11 +137,17 @@ def _add_stock(db: Session, user: User, name: str, category: str, grams: float) 
         db.add(StockItem(user_id=user.id, name=name, category=category, grams=grams))
 
 
-def _recipe_or_404(db: Session, slug: str) -> Recipe:
+def _recipe_or_404(db: Session, slug: str, lang: str) -> Recipe:
     recipe = recipes.get(db, slug)
     if not recipe:
-        raise HTTPException(404, persona.NOT_FOUND)
+        raise HTTPException(404, t("not_found", lang))
     return recipe
+
+
+def _own_or_404(row, user: User):
+    if not row or row.user_id != user.id:
+        raise HTTPException(404, t("item_not_found", lang_of(user)))
+    return row
 
 
 # ---------------------------------------------------------------- endpointlar
@@ -138,9 +158,27 @@ def health():
     return {"ok": True, "llm": llm.enabled()}
 
 
+def _me_out(user: User) -> dict:
+    return {
+        "id": user.id,
+        "first_name": user.first_name,
+        "language": user.language,  # None — ilova til tanlash oynasini ko'rsatadi
+        "greeting": persona.greeting(user.first_name, lang_of(user)),
+        "llm": llm.enabled(),
+    }
+
+
 @app.get("/api/me")
 def me(user: User = Depends(current_user)):
-    return {"id": user.id, "first_name": user.first_name, "greeting": persona.greeting(user.first_name), "llm": llm.enabled()}
+    return _me_out(user)
+
+
+@app.put("/api/me/language")
+def set_language(body: LanguageIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    user = db.merge(user)
+    user.language = body.language
+    db.commit()
+    return _me_out(user)
 
 
 @app.get("/api/stock")
@@ -150,6 +188,7 @@ def get_stock(user: User = Depends(current_user), db: Session = Depends(get_db))
 
 @app.post("/api/stock/parse")
 def parse_stock(body: StockText, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    lang = lang_of(user)
     # Avval bepul qoidaga asoslangan parser; Gemini faqat u tushunmagan bo'laklar uchun chaqiriladi
     parsed, unknown = parse_stock_text(body.text)
     items: list[tuple[str, str, float]] = [(p.name, p.category, p.grams) for p in parsed]
@@ -166,8 +205,8 @@ def parse_stock(body: StockText, user: User = Depends(current_user), db: Session
         _add_stock(db, user, name, category, grams)
     db.commit()
     return {
-        "message": persona.stock_added([(n, g) for n, _, g in items], unknown),
-        "added": [{"name": n, "grams": round(g)} for n, _, g in items],
+        "message": persona.stock_added([(n, g) for n, _, g in items], unknown, lang),
+        "added": [{"name": n, "display": display_name(n, lang), "grams": round(g)} for n, _, g in items],
         "unknown": unknown,
         "stock": _stock_out(db, user),
     }
@@ -175,9 +214,7 @@ def parse_stock(body: StockText, user: User = Depends(current_user), db: Session
 
 @app.patch("/api/stock/{item_id}")
 def update_stock(item_id: int, body: StockUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    row = db.get(StockItem, item_id)
-    if not row or row.user_id != user.id:
-        raise HTTPException(404, "Topilmadi")
+    row = _own_or_404(db.get(StockItem, item_id), user)
     if body.grams <= 0:
         db.delete(row)
     else:
@@ -188,65 +225,75 @@ def update_stock(item_id: int, body: StockUpdate, user: User = Depends(current_u
 
 @app.delete("/api/stock/{item_id}")
 def delete_stock(item_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    row = db.get(StockItem, item_id)
-    if not row or row.user_id != user.id:
-        raise HTTPException(404, "Topilmadi")
-    db.delete(row)
+    db.delete(_own_or_404(db.get(StockItem, item_id), user))
     db.commit()
     return _stock_out(db, user)
 
 
 @app.get("/api/recipes")
 def list_recipes(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return [{"slug": r.slug, "name": r.name, "time_minutes": r.time_minutes} for r in recipes.all_recipes(db)]
+    lang = lang_of(user)
+    items = [
+        {"slug": r.slug, "name": recipes.localized(r, lang)["name"], "time_minutes": r.time_minutes}
+        for r in recipes.all_recipes(db)
+    ]
+    return sorted(items, key=lambda i: i["name"])
 
 
 @app.post("/api/suggest")
 def suggest(body: SuggestIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """A ssenariy: "Bugun nima ovqat qilsam ekan?" """
+    lang = lang_of(user)
     stock = kitchen.stock_map(db, user.id)
-    checks = kitchen.suggest(recipes.all_recipes(db), body.servings, stock)
-    return {"message": persona.suggestions(checks, body.servings), "suggestions": [_check_out(c) for c in checks]}
+    checks = kitchen.suggest(recipes.all_recipes(db), body.servings, stock, lang)
+    return {"message": persona.suggestions(checks, body.servings, lang), "suggestions": [_check_out(c, lang) for c in checks]}
 
 
 @app.post("/api/recipes/resolve")
 def resolve_recipe(body: ResolveIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """B ssenariy: foydalanuvchi yozgan taomni topish (bazada bo'lmasa — web qidiruv orqali)."""
+    lang = lang_of(user)
     try:
         recipe = recipes.resolve(db, body.query)
     except recipes.NotUzbekDish:
-        raise HTTPException(422, persona.NOT_UZBEK)
+        raise HTTPException(422, t("not_uzbek", lang))
     except recipes.RecipeNotFound:
-        raise HTTPException(404, persona.NOT_FOUND)
+        raise HTTPException(404, t("not_found", lang))
     except llm.LLMUnavailable as e:
-        raise HTTPException(503, persona.AI_OFFLINE if str(e) == "disabled" else persona.NOT_FOUND)
-    return _recipe_out(recipe)
+        raise HTTPException(503, t("ai_offline", lang) if str(e) == "disabled" else t("not_found", lang))
+    return _recipe_out(recipe, lang)
 
 
 @app.post("/api/plan")
 def plan(body: PlanIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Tanlangan taom uchun omborni hisoblaydi va yetishmovchilikni aytadi."""
-    recipe = _recipe_or_404(db, body.slug)
-    check = kitchen.check_recipe(recipe, body.servings, kitchen.stock_map(db, user.id))
-    return {"message": persona.plan(check), "check": _check_out(check), "recipe": _recipe_out(recipe)}
+    lang = lang_of(user)
+    recipe = _recipe_or_404(db, body.slug, lang)
+    check = kitchen.check_recipe(recipe, body.servings, kitchen.stock_map(db, user.id), lang)
+    return {"message": persona.plan(check, lang), "check": _check_out(check, lang), "recipe": _recipe_out(recipe, lang)}
 
 
 @app.post("/api/cook/start")
 def cook_start(body: PlanIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    recipe = _recipe_or_404(db, body.slug)
-    return {"message": persona.start_cooking(recipe.name, body.servings), "recipe": _recipe_out(recipe)}
+    lang = lang_of(user)
+    recipe = _recipe_or_404(db, body.slug, lang)
+    out = _recipe_out(recipe, lang)
+    return {"message": persona.start_cooking(out["name"], body.servings, lang), "recipe": out}
 
 
 @app.post("/api/cook/finish")
 def cook_finish(body: PlanIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """"Taom tayyor" — ishlatilgan masalliqlar ombordan ayiriladi."""
-    recipe = _recipe_or_404(db, body.slug)
+    lang = lang_of(user)
+    recipe = _recipe_or_404(db, body.slug, lang)
     used = kitchen.consume(db, user.id, recipe, body.servings)
     db.add(CookLog(user_id=user.id, recipe_slug=recipe.slug, servings=body.servings, used=used))
     db.commit()
     return {
-        "message": persona.finished(recipe.name),
-        "used": [{**u, "label": format_grams(u["grams"], u["name"])} for u in used],
+        "message": persona.finished(recipes.localized(recipe, lang)["name"], lang),
+        "used": [
+            {**u, "display": display_name(u["name"], lang), "label": format_grams(u["grams"], u["name"], lang)} for u in used
+        ],
         "stock": _stock_out(db, user),
     }
 
@@ -255,8 +302,9 @@ def cook_finish(body: PlanIn, user: User = Depends(current_user), db: Session = 
 
 
 def _shopping_out(db: Session, user: User) -> list[dict]:
+    lang = lang_of(user)
     rows = db.scalars(select(ShoppingItem).where(ShoppingItem.user_id == user.id).order_by(ShoppingItem.id)).all()
-    return [{"id": r.id, "name": r.name, "grams": round(r.grams), "label": format_grams(r.grams, r.name)} for r in rows]
+    return [_item_out(r.id, r.name, r.grams, lang) for r in rows]
 
 
 @app.get("/api/shopping")
@@ -277,15 +325,13 @@ def add_shopping(body: ShoppingIn, user: User = Depends(current_user), db: Sessi
         else:
             db.add(ShoppingItem(user_id=user.id, name=name, grams=grams))
     db.commit()
-    return {"message": "Xarid ro'yxatiga qo'shdim. Bozorga borganingizda esdan chiqmaydi!", "items": _shopping_out(db, user)}
+    return {"message": t("shopping_added", lang_of(user)), "items": _shopping_out(db, user)}
 
 
 @app.post("/api/shopping/{item_id}/bought")
 def shopping_bought(item_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Sotib olindi — omborga o'tkaziladi."""
-    row = db.get(ShoppingItem, item_id)
-    if not row or row.user_id != user.id:
-        raise HTTPException(404, "Topilmadi")
+    row = _own_or_404(db.get(ShoppingItem, item_id), user)
     name, category = canonical(row.name)
     _add_stock(db, user, name, category, row.grams)
     db.delete(row)
@@ -295,10 +341,7 @@ def shopping_bought(item_id: int, user: User = Depends(current_user), db: Sessio
 
 @app.delete("/api/shopping/{item_id}")
 def shopping_delete(item_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    row = db.get(ShoppingItem, item_id)
-    if not row or row.user_id != user.id:
-        raise HTTPException(404, "Topilmadi")
-    db.delete(row)
+    db.delete(_own_or_404(db.get(ShoppingItem, item_id), user))
     db.commit()
     return _shopping_out(db, user)
 
@@ -308,16 +351,18 @@ def shopping_delete(item_id: int, user: User = Depends(current_user), db: Sessio
 
 @app.post("/api/chat")
 def chat(body: ChatIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    lang = lang_of(user)
     if not llm.enabled():
-        raise HTTPException(503, "Hozircha savollarga javob bera olmayman, lekin retsept qadamlari doim shu yerda!")
+        raise HTTPException(503, t("chat_offline", lang))
     context = None
     if body.slug and (recipe := recipes.get(db, body.slug)):
-        steps = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(recipe.steps))
-        context = f"Foydalanuvchi hozir {body.servings or 1} kishilik {recipe.name} tayyorlamoqda.\nRetsept:\n{steps}"
+        local = recipes.localized(recipe, lang)
+        steps = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(local["steps"]))
+        context = t("chat_context", lang, n=body.servings or 1, dish=local["name"], steps=steps)
     try:
-        reply = llm.chat(body.messages, context)
+        reply = llm.chat(body.messages, context, lang)
     except llm.LLMUnavailable:
-        raise HTTPException(503, "Kechirasiz, hozir javob bera olmadim. Birozdan keyin qayta so'rang.")
+        raise HTTPException(503, t("chat_failed", lang))
     return {"reply": reply}
 
 
@@ -326,14 +371,14 @@ def chat(body: ChatIn, user: User = Depends(current_user), db: Session = Depends
 
 @app.post("/api/admin/recipes")
 def admin_upsert_recipe(data: dict, x_admin_token: str | None = Header(default=None), db: Session = Depends(get_db)):
-    """n8n workflow topgan retseptni JSON ko'rinishida bazaga yozadi."""
+    """n8n workflow topgan retseptni JSON ko'rinishida bazaga yozadi (ixtiyoriy "translations": {"en": ..., "tr": ...})."""
     if not settings.admin_token or not hmac.compare_digest(x_admin_token or "", settings.admin_token):
-        raise HTTPException(403, "Ruxsat yo'q")
+        raise HTTPException(403, "Forbidden")
     try:
         recipe = recipes.upsert(db, data, source="n8n")
     except ValueError as e:
         raise HTTPException(422, str(e))
-    return _recipe_out(recipe)
+    return _recipe_out(recipe, DEFAULT_LANG)
 
 
 # ---------------------------------------------------------------- Mini App (frontend/dist)
