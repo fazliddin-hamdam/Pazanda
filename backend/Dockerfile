@@ -4,5 +4,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY bot.py .
+# Root huquqlarisiz ishlash
+RUN useradd --create-home --uid 10001 app && chown -R app /app
+USER app
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

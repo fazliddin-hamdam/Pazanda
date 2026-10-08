@@ -1,9 +1,22 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
-*.db
+
+# Sirlar va mahalliy ma'lumotlar — hech qachon commit qilinmasin
 .env
+.env.*
+!.env.example
+*.db
+*.sqlite3
+backend/logs/
+logs/
+*.log
+
+# Node / build
 node_modules/
 dist/
-logs/
+
+# Mahalliy vositalar sozlamalari (shaxsiy yo'llar bor)
+.claude/

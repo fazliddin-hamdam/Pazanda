@@ -52,7 +52,8 @@ npm install
 npm run dev
 ```
 
-Tarayıcıda http://localhost:5173 — `DEV_MODE=true` iken Telegram olmadan "Mehmon" kullanıcısıyla çalışır.
+Tarayıcıda http://localhost:5173 — sadece lokal denemede `backend/.env` içinde `DEV_MODE=true` yaparsan Telegram
+olmadan "Mehmon" kullanıcısıyla çalışır (internete açıkken asla).
 
 Testler:
 
@@ -98,9 +99,17 @@ başlatır (menü butonu otomatik güncellenir). Çöken parçayı yeniden başl
 
 ## Docker (PostgreSQL ile)
 
+Kök klasörde `.env` dosyası oluşturup güçlü bir veritabanı şifresi ver (bu dosya git'e girmez):
+
+```
+POSTGRES_PASSWORD=<uzun-rastgele-şifre>
+```
+
 ```bash
 docker compose up --build
 ```
+
+API sadece `127.0.0.1:8000`'de dinler; dışarıya reverse proxy veya tünel ile açın.
 
 ## n8n entegrasyonu
 
@@ -118,3 +127,16 @@ Harici bir n8n workflow'u tarif toplayıp `POST /api/admin/recipes` adresine (`X
 - Vektör DB (pgvector) ile anlamsal tarif arama — şu an ad/alias + bulanık eşleşme kullanılıyor.
 - "2 ta piyoz ishlatdim" gibi serbest metinle stoktan düşme.
 - Kullanıcıya özel tarif geçmişi / favoriler (`cook_logs` tablosu hazır).
+
+## Güvenlik
+
+- Anahtarlar (`TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `ADMIN_TOKEN`) sadece `backend/.env` içinde durur;
+  `.env`, veritabanları ve loglar `.gitignore` ile repoya girmez. Örnek ayarlar: `backend/.env.example`.
+- Her istek Telegram `initData` imzasıyla doğrulanır (HMAC, 24 saat geçerlilik). `DEV_MODE=true` bu kontrolü
+  kapatır — sadece lokal deneme içindir.
+- `DEV_MODE` kapalıyken Swagger (`/docs`) kapalıdır; `/api/admin/recipes` sadece `ADMIN_TOKEN` ayarlıysa çalışır.
+- Bot logları istek adreslerini yazmaz (Telegram API adresi token'ı içerir).
+- Bir anahtar yanlışlıkla paylaşılırsa hemen yenileyin: Telegram için @BotFather → `/revoke`,
+  Gemini için https://aistudio.google.com/apikey.
+- Güvenlik açığı bulursanız lütfen herkese açık issue yerine repo sahibine özel olarak bildirin
+  (GitHub → Security → Report a vulnerability).
